@@ -292,12 +292,53 @@
   {% do return(load_result('get_columns_in_relation').table) %}
 {% endmacro %}
 
-{% macro spark__list_relations_without_caching(relation) %}
+{% macro __outdated_spark__list_relations_without_caching(relation) %}
   {% call statement('list_relations_without_caching', fetch_result=True) -%}
     show table extended in {{ relation.schema }} like '*'
   {% endcall %}
 
   {% do return(load_result('list_relations_without_caching').table) %}
+{% endmacro %}
+
+{% macro spark__list_relations_without_caching(relation) %}
+  {# 
+    -- //\\ zsn  ANALYTICS-5837
+    Macro: List all tables in iceberg.default 
+    with an extra `information` column similar to SHOW TABLE EXTENDED
+  #}
+
+  {% call statement('list_tables', fetch_result=True) %}
+    SHOW TABLES IN iceberg.default
+  {% endcall %}
+
+  {% set tables = load_result('list_tables').table %}
+
+  {% set queries = [] %}
+
+  {# Loop over tables and build SELECT for each #}
+  {% for t in tables %}
+    {% set table_name = t.tableName %}
+    {% set location = 's3a://tb-data-integration/iceberg/default/' ~ table_name %}
+    {% set info = "Database: default\nTable: " ~ table_name ~ "\nType: ICEBERG\nProvider: iceberg\nLocation: " ~ location ~ "\nPartition Columns: []\nSchema: <replace_with_schema_if_needed>" %}
+    
+    {% set q %}
+      SELECT
+          'default' AS namespace,
+          '{{ table_name }}' AS tableName,
+          false AS isTemporary,
+          '{{ info }}' AS information
+    {% endset %}
+
+    {% do queries.append(q) %}
+  {% endfor %}
+
+  {% set final_query = queries | join(' UNION ALL ') %}
+
+  {% call statement('extended_info', fetch_result=True) %}
+    {{ final_query }}
+  {% endcall %}
+
+  {% do return(load_result('extended_info').table) %}
 {% endmacro %}
 
 {% macro list_relations_show_tables_without_caching(schema_relation) %}
