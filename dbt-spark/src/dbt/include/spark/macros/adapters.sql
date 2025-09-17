@@ -292,7 +292,9 @@
   {% do return(load_result('get_columns_in_relation').table) %}
 {% endmacro %}
 
-{% macro __outdated_spark__list_relations_without_caching(relation) %}
+-- //\\ zsn  ANALYTICS-5837 --------------------------------------------------- begin
+-- Spark iceberg can't show table extended, here is a workaround for dbt-spark-bork
+{% macro __original__________spark__list_relations_without_caching(relation) %}
   {% call statement('list_relations_without_caching', fetch_result=True) -%}
     show table extended in {{ relation.schema }} like '*'
   {% endcall %}
@@ -301,45 +303,29 @@
 {% endmacro %}
 
 {% macro spark__list_relations_without_caching(relation) %}
-  {# 
-    -- //\\ zsn  ANALYTICS-5837
-    Macro: List all tables in iceberg.default 
-    with an extra `information` column similar to SHOW TABLE EXTENDED
-  #}
-
-  {% call statement('list_tables', fetch_result=True) %}
-    SHOW TABLES IN iceberg.default
+  {% set iceberg_database = relation.database or 'iceberg' %}
+  {% set iceberg_schema = relation.schema or 'default' %}
+  {% call statement('list_relations_without_caching', fetch_result=True) %}
+    SHOW TABLES IN {{ iceberg_database }}.{{ iceberg_schema }}
   {% endcall %}
-
-  {% set tables = load_result('list_tables').table %}
-
-  {% set queries = [] %}
-
-  {# Loop over tables and build SELECT for each #}
-  {% for t in tables %}
-    {% set table_name = t.tableName %}
-    {% set location = 's3a://tb-data-integration/iceberg/default/' ~ table_name %}
-    {% set info = "Database: default\nTable: " ~ table_name ~ "\nType: ICEBERG\nProvider: iceberg\nLocation: " ~ location ~ "\nPartition Columns: []\nSchema: <replace_with_schema_if_needed>" %}
-    
-    {% set q %}
-      SELECT
-          'default' AS namespace,
-          '{{ table_name }}' AS tableName,
-          false AS isTemporary,
-          '{{ info }}' AS information
-    {% endset %}
-
-    {% do queries.append(q) %}
+  
+  {% set original_table = load_result('list_relations_without_caching').table %}
+  
+  {# Build new data structure #}
+  {% set enhanced_rows = [] %}
+  {% for row in original_table.rows %}
+    {% set row_dict = {} %}
+    {% for i in range(original_table.column_names | length) %}
+      {% do row_dict.update({original_table.column_names[i]: row[i]}) %}
+    {% endfor %}
+    {% do row_dict.update({'information': ''}) %}
+    {% do enhanced_rows.append(row_dict) %}
   {% endfor %}
-
-  {% set final_query = queries | join(' UNION ALL ') %}
-
-  {% call statement('extended_info', fetch_result=True) %}
-    {{ final_query }}
-  {% endcall %}
-
-  {% do return(load_result('extended_info').table) %}
+  
+  {% do return(enhanced_rows) %}
 {% endmacro %}
+
+-- //\\ zsn  ANALYTICS-5837 --------------------------------------------------- end
 
 {% macro list_relations_show_tables_without_caching(schema_relation) %}
   {#-- Spark with iceberg tables don't work with show table extended for #}
