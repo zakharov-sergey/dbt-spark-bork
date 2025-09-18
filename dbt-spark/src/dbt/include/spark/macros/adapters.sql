@@ -303,26 +303,36 @@
 {% endmacro %}
 
 {% macro spark__list_relations_without_caching(relation) %}
-  {% set iceberg_database = relation.database or 'iceberg' %}
-  {% set iceberg_schema = relation.schema or 'default' %}
-  {% call statement('list_relations_without_caching', fetch_result=True) %}
-    SHOW TABLES IN {{ iceberg_database }}.{{ iceberg_schema }}
+  {#-- First, get the list of tables using SHOW TABLES (works with V2 iceberg) #}
+  {% call statement('list_tables', fetch_result=True) -%}
+    show tables in {{ relation.schema }} like '*'
   {% endcall %}
   
-  {% set original_table = load_result('list_relations_without_caching').table %}
+  {% set tables_result = load_result('list_tables').table %}
+  {% set extended_results = [] %}
   
-  {# Build new data structure #}
-  {% set enhanced_rows = [] %}
-  {% for row in original_table.rows %}
-    {% set row_dict = {} %}
-    {% for i in range(original_table.column_names | length) %}
-      {% do row_dict.update({original_table.column_names[i]: row[i]}) %}
-    {% endfor %}
-    {% do row_dict.update({'information': ''}) %}
-    {% do enhanced_rows.append(row_dict) %}
+  {#-- Iterate through each table and get extended information #}
+  {% for table_row in tables_result %}
+    {% set table_name = relation.schema ~ '.' ~ table_row[1] %}
+    
+    {% call statement('describe_table_' ~ loop.index, fetch_result=True) -%}
+      describe extended {{ table_name }}
+    {% endcall %}
+    
+    {% set describe_result = load_result('describe_table_' ~ loop.index).table %}
+    
+    {#-- Build the result row in the format: database|tableName|isTemporary|information #}
+    {% set table_info = {
+      'database': table_row[0],
+      'tableName': table_row[1], 
+      'isTemporary': table_row[2] if table_row|length > 2 else false,
+      'information': describe_result
+    } %}
+    
+    {% do extended_results.append([table_info.database, table_info.tableName, table_info.isTemporary, table_info.information]) %}
   {% endfor %}
   
-  {% do return(enhanced_rows) %}
+  {% do return(extended_results) %}
 {% endmacro %}
 
 -- //\\ zsn  ANALYTICS-5837 --------------------------------------------------- end
